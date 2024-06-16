@@ -1,0 +1,212 @@
+#####################
+## Install PG 16.3 ##
+#####################
+-- download the required files
+https://download.postgresql.org/pub/repos/yum/16/redhat/rhel-9.3-x86_64/
+
+
+-- go to this dir
+cd /home/team
+
+
+-- upload the required packages
+postgresql16-16.3-1PGDG.rhel9.x86_64.rpm
+postgresql16-contrib-16.3-1PGDG.rhel9.x86_64.rpm
+postgresql16-libs-16.3-1PGDG.rhel9.x86_64.rpm
+postgresql16-server-16.3-1PGDG.rhel9.x86_64.rpm
+
+
+-- install the dependencies
+dnf install lz4 -y
+dnf install libperl.so.5.32 -y
+
+
+-- install the packages
+rpm -ivh postgresql16-libs-16.3-1PGDG.rhel9.x86_64.rpm
+rpm -ivh postgresql16-16.3-1PGDG.rhel9.x86_64.rpm
+rpm -ivh postgresql16-server-16.3-1PGDG.rhel9.x86_64.rpm
+rpm -ivh postgresql16-contrib-16.3-1PGDG.rhel9.x86_64.rpm
+
+
+-- check the Linux utilities
+ll /usr/pgsql-16/bin/
+
+
+-- create custom data dir and give permission
+mkdir -p /data/postgresql163/datadir
+chown -R postgres:postgres /data/postgresql163
+
+mkdir -p /data/postgresql163/wal_archive
+chown -R postgres:postgres /data/postgresql163/wal_archive
+
+
+-- initialize the database
+sudo -i -u postgres
+/usr/pgsql-16/bin/initdb -D /data/postgresql163/datadir
+exit
+
+
+-- add the custom datadir to Linux service
+vi /usr/lib/systemd/system/postgresql-16.service
+Environment=PGDATA=/data/postgresql163/datadir
+
+
+-- reload and start the postgresql
+systemctl daemon-reload
+systemctl start postgresql-16
+systemctl enable postgresql-16
+systemctl status postgresql-16
+
+
+-- check the Default datadir after install
+sudo -u postgres psql
+
+SHOW data_directory;
+exit
+
+
+-- set pass for super user
+sudo -u postgres psql
+ALTER USER postgres WITH PASSWORD 'pGTest';
+
+vi /data/postgresql163/datadir/pg_hba.conf
+# "local" is for Unix domain socket connections only
+local   all             all                                     md5
+
+systemctl reload postgresql-16
+
+
+-- database log
+tail -1000f /data/postgresql163/datadir/log/postgresql-Tue.log
+
+####################################
+## Configure the Parameters of PG ##
+####################################
+-- Configuration file for 8GB RAM
+vi /data/postgresql163/datadir/postgresql.conf
+# Memory settings
+shared_buffers = 2GB
+effective_cache_size = 6GB
+maintenance_work_mem = 256MB
+work_mem = 32MB
+
+# wal file settings
+wal_buffers = -1 # -1 sets based on shared_buffers
+min_wal_size = 512MB
+max_wal_size = 1GB
+
+# Checkpoints settings
+checkpoint_completion_target = 0.7
+
+# Connection settings
+max_connections = 200
+
+# archive settings for wal
+archive_mode = on
+archive_command = 'test ! -f /data/postgresql163/wal_archive/%f && cp %p /data/postgresql163/wal_archive/%f'
+
+# Connection settings
+listen_addresses = '*'
+
+
+-- network allowing
+vi /data/postgresql163/datadir/pg_hba.conf
+host    all             all             0.0.0.0/00              md5
+
+
+systemctl status postgresql-16
+systemctl restart postgresql-16
+
+
+##################################
+## User Schema Tablespace of PG ##
+##################################
+-- create dir & tablespaces
+mkdir -p /data/postgresql163/tablespaces/testpay
+chown -R postgres:postgres /data/postgresql163/tablespaces/testpay
+
+sudo -u postgres psql
+CREATE TABLESPACE testpaytbs LOCATION '/data/postgresql163/tablespaces/testpay';
+
+
+-- create database
+CREATE DATABASE testpaydb
+  WITH OWNER = postgres
+       TEMPLATE = template0
+       ENCODING = 'UTF8'
+       LC_COLLATE = 'en_US.UTF-8'
+       LC_CTYPE = 'en_US.UTF-8'
+       TABLESPACE = testpaytbs;
+
+
+-- use testpaydb
+sudo -u postgres psql
+\c testpaydb
+
+SELECT schema_name 
+FROM information_schema.schemata 
+WHERE schema_name NOT LIKE 'pg_%' 
+AND schema_name != 'information_schema';
+
+
+-- create schema in the database
+CREATE SCHEMA ahtestpay AUTHORIZATION postgres;
+
+
+-- user create and give permission
+CREATE USER testpay WITH PASSWORD 'testpay10';
+GRANT CONNECT ON DATABASE testpaydb TO testpay;
+GRANT USAGE ON SCHEMA ahtestpay TO testpay;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ahtestpay TO testpay;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ahtestpay GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO testpay;
+GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA ahtestpay TO testpay;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ahtestpay TO testpay;
+GRANT CREATE ON SCHEMA ahtestpay TO testpay;
+
+
+-- set default schema ahtestpay for testpay user
+psql -U postgres -d testpaydb
+ALTER USER testpay SET search_path TO ahtestpay;
+SELECT usename, useconfig FROM pg_user WHERE usename = 'testpay';
+
+
+-- login with user
+psql -U testpay -W -h 10.0.10.10 -d testpaydb
+pass: testpay10
+
+SELECT schema_name 
+FROM information_schema.schemata 
+WHERE schema_name NOT LIKE 'pg_%' 
+AND schema_name != 'information_schema';
+
+
+-- create table and insert data
+CREATE TABLE employees (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100),
+    age INTEGER
+);
+
+INSERT INTO employees (name, age) VALUES ('John Doe', 30);
+INSERT INTO employees (name, age) VALUES ('Jane Smith', 25);
+
+testpaydb=> select * from employees;
+
+
+#################################
+## PostgreSQL credentials Prod ##
+#################################
+-- super user
+IP: 10.0.10.10
+Port: 5432
+User: postgres
+Pass: pGTest
+
+-- app user
+IP: 10.0.10.10
+Port: 5432
+User: testpay
+Pass: testpay10
+Database: testpaydb
+Schema: ahtestpay
+
